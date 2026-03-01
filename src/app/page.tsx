@@ -2,14 +2,26 @@
 
 import { useState, useCallback } from "react";
 import { ChefHat } from "lucide-react";
-import { ChatInterface } from "./components/ChatInterface";
+import { ChatInterface, type ChatPhase } from "./components/ChatInterface";
 import { CurrentStep, APICallLog } from "./components/ToolVisualization";
-import type { ToolCall } from "./components/types";
+import { DataSourcePanel } from "./components/DataSourcePanel";
+import type { ToolCall, SessionContext } from "./components/types";
+import type { DataSource } from "./components/topicDetector";
 
 export default function Home() {
+  // Tool call tracking (for context gathering phase)
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [activeTool, setActiveTool] = useState<ToolCall | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+
+  // Phase and context tracking
+  const [phase, setPhase] = useState<ChatPhase>("select-restaurant");
+  const [sessionContext, setSessionContext] = useState<SessionContext | null>(null);
+
+  // Chat streaming state (for reasoning display and data source highlighting)
+  const [activeSources, setActiveSources] = useState<Set<DataSource>>(new Set());
+  const [reasoning, setReasoning] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
 
   const handleToolCallStart = useCallback((toolCall: ToolCall) => {
     setIsRunning(true);
@@ -34,6 +46,36 @@ export default function Home() {
       setIsRunning(false);
     }, 500);
   }, []);
+
+  const handleContextReady = useCallback((context: SessionContext) => {
+    setSessionContext(context);
+  }, []);
+
+  const handlePhaseChange = useCallback((newPhase: ChatPhase) => {
+    setPhase(newPhase);
+    // Reset tool calls when going back to restaurant selection
+    if (newPhase === "select-restaurant") {
+      setToolCalls([]);
+      setSessionContext(null);
+      setActiveSources(new Set());
+      setReasoning(null);
+    }
+  }, []);
+
+  const handleActiveSourcesChange = useCallback((sources: Set<DataSource>) => {
+    setActiveSources(sources);
+  }, []);
+
+  const handleReasoningChange = useCallback((newReasoning: string | null) => {
+    setReasoning(newReasoning);
+  }, []);
+
+  const handleStreamingChange = useCallback((streaming: boolean) => {
+    setIsStreaming(streaming);
+  }, []);
+
+  // Determine which right panel to show
+  const showDataSourcePanel = phase === "chat" || phase === "select-intent";
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
@@ -63,18 +105,35 @@ export default function Home() {
         <div className="relative flex justify-center items-start gap-8">
           {/* Left - Current Step Spotlight */}
           <div className="pt-12">
-            <CurrentStep activeTool={activeTool} isRunning={isRunning} />
+            <CurrentStep
+              activeTool={activeTool}
+              isRunning={isRunning}
+              reasoning={reasoning}
+              isStreaming={isStreaming}
+            />
           </div>
 
           {/* Center - Phone with Chat */}
           <ChatInterface
             onToolCallStart={handleToolCallStart}
             onToolCallComplete={handleToolCallComplete}
+            onContextReady={handleContextReady}
+            onPhaseChange={handlePhaseChange}
+            onActiveSourcesChange={handleActiveSourcesChange}
+            onReasoningChange={handleReasoningChange}
+            onStreamingChange={handleStreamingChange}
           />
 
-          {/* Right - API Call Log */}
+          {/* Right - API Call Log or Data Source Panel */}
           <div className="pt-12">
-            <APICallLog toolCalls={toolCalls} />
+            {showDataSourcePanel && sessionContext ? (
+              <DataSourcePanel
+                context={sessionContext}
+                activeSources={activeSources}
+              />
+            ) : (
+              <APICallLog toolCalls={toolCalls} />
+            )}
           </div>
         </div>
       </div>

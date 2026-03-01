@@ -15,6 +15,7 @@ import {
   formatApiCall,
   formatToolResult,
 } from "./types";
+import { TopicTracker, extractReasoning, type DataSource } from "./topicDetector";
 
 interface Message {
   id: string;
@@ -22,10 +23,16 @@ interface Message {
   content: string;
 }
 
+export type ChatPhase = "select-restaurant" | "loading-context" | "select-intent" | "chat";
+
 interface ChatInterfaceProps {
   onToolCallStart?: (toolCall: ToolCall) => void;
   onToolCallComplete?: (toolCall: ToolCall) => void;
   onContextReady?: (context: SessionContext) => void;
+  onPhaseChange?: (phase: ChatPhase) => void;
+  onActiveSourcesChange?: (sources: Set<DataSource>) => void;
+  onReasoningChange?: (reasoning: string | null) => void;
+  onStreamingChange?: (isStreaming: boolean) => void;
 }
 
 // Stream event types
@@ -39,8 +46,6 @@ interface StreamEvent {
   output?: Record<string, unknown>;
 }
 
-type Phase = "select-restaurant" | "loading-context" | "select-intent" | "chat";
-
 // Track tool info by toolCallId for matching output events
 interface ToolInfo {
   toolName: string;
@@ -52,8 +57,12 @@ export function ChatInterface({
   onToolCallStart,
   onToolCallComplete,
   onContextReady,
+  onPhaseChange,
+  onActiveSourcesChange,
+  onReasoningChange,
+  onStreamingChange,
 }: ChatInterfaceProps) {
-  const [phase, setPhase] = useState<Phase>("select-restaurant");
+  const [phase, setPhase] = useState<ChatPhase>("select-restaurant");
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [sessionContext, setSessionContext] = useState<SessionContext | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -61,7 +70,14 @@ export function ChatInterface({
   const [isLoading, setIsLoading] = useState(false);
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
   const toolInfoMapRef = useRef<Map<string, ToolInfo>>(new Map());
+  const topicTrackerRef = useRef<TopicTracker>(new TopicTracker());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Notify parent of phase changes
+  const updatePhase = useCallback((newPhase: ChatPhase) => {
+    setPhase(newPhase);
+    onPhaseChange?.(newPhase);
+  }, [onPhaseChange]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -73,7 +89,7 @@ export function ChatInterface({
 
   // Fetch initial context data for the selected restaurant
   const fetchContextData = useCallback(async (restaurant: Restaurant) => {
-    setPhase("loading-context");
+    updatePhase("loading-context");
     setIsLoading(true);
     toolInfoMapRef.current.clear(); // Clear any stale tool info
 
@@ -229,16 +245,16 @@ Just gather the data - I'll ask my specific question next.`;
       const finalContext = context as SessionContext;
       setSessionContext(finalContext);
       onContextReady?.(finalContext);
-      setPhase("select-intent");
+      updatePhase("select-intent");
     } catch (error) {
       console.error("Context fetch error:", error);
       // Fall back to chat anyway
-      setPhase("select-intent");
+      updatePhase("select-intent");
     } finally {
       setIsLoading(false);
       setActiveToolName(null);
     }
-  }, [onToolCallStart, onToolCallComplete, onContextReady]);
+  }, [onToolCallStart, onToolCallComplete, onContextReady, updatePhase]);
 
   // Handle restaurant selection
   const handleRestaurantSelect = (restaurant: Restaurant) => {
@@ -248,7 +264,7 @@ Just gather the data - I'll ask my specific question next.`;
 
   // Handle intent selection - starts the chat with context
   const handleIntentSelect = (intent: typeof STAFFING_INTENTS[0]) => {
-    setPhase("chat");
+    updatePhase("chat");
 
     // Build context summary for the system
     const contextSummary = buildContextSummary();
@@ -293,6 +309,8 @@ Just gather the data - I'll ask my specific question next.`;
   // Send message with pre-fetched context (no new API calls needed)
   const sendMessageWithContext = async (userPrompt: string, contextSummary: string) => {
     setIsLoading(true);
+    onStreamingChange?.(true);
+    topicTrackerRef.current.reset();
 
     // Create a message that includes context so the model doesn't need to fetch again
     const systemContext = `You already have this context data (DO NOT call any tools - use this data):
@@ -347,6 +365,14 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
             if (parsed.type === "text-delta" && parsed.delta) {
               assistantContent += parsed.delta;
 
+              // Track which data sources are being referenced
+              const activeSources = topicTrackerRef.current.update(assistantContent);
+              onActiveSourcesChange?.(activeSources);
+
+              // Extract reasoning snippets
+              const reasoning = extractReasoning(assistantContent);
+              onReasoningChange?.(reasoning);
+
               if (!hasAddedAssistantMessage) {
                 setMessages((prev) => [
                   ...prev,
@@ -384,6 +410,13 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
       ]);
     } finally {
       setIsLoading(false);
+      onStreamingChange?.(false);
+      // Clear reasoning after streaming ends
+      onReasoningChange?.(null);
+      // Keep active sources visible briefly, then clear
+      setTimeout(() => {
+        onActiveSourcesChange?.(new Set());
+      }, 2000);
     }
   };
 
@@ -407,12 +440,15 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
 
   // Reset to start
   const reset = () => {
-    setPhase("select-restaurant");
+    updatePhase("select-restaurant");
     setSelectedRestaurant(null);
     setSessionContext(null);
     setMessages([]);
     setInputValue("");
     toolInfoMapRef.current.clear();
+    topicTrackerRef.current.reset();
+    onActiveSourcesChange?.(new Set());
+    onReasoningChange?.(null);
   };
 
   return (
