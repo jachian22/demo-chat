@@ -162,20 +162,55 @@ export const getWeather = tool({
       });
     }
 
+    // Generate concise summary
+    const summary = generateWeatherSummary(insights, overallImpact);
+
     return {
       location: data.city?.name,
       forecast_days: insights.length,
       overall_impact: overallImpact,
       insights,
-      summary:
-        overallImpact === "high"
-          ? "Weather conditions favor increased foot traffic - consider additional staffing."
-          : overallImpact === "medium"
-            ? "Weather may affect traffic patterns - monitor and adjust as needed."
-            : "Weather unlikely to significantly impact normal operations.",
+      summary,
     };
   },
 });
+
+// Private helper - generates concise weather summary
+function generateWeatherSummary(
+  insights: Array<{ date: string; high: number; low: number; rain: boolean; condition: string }>,
+  impact: string
+): string {
+  if (insights.length === 0) return "No forecast data.";
+
+  const rainyDays = insights.filter(d => d.rain).map(d => formatDayName(d.date));
+  const temps = insights.map(d => d.high);
+  const avgHigh = Math.round(temps.reduce((a, b) => a + b, 0) / temps.length);
+
+  const parts: string[] = [];
+
+  // Temperature summary
+  if (avgHigh < 40) parts.push(`Cold (${Math.min(...temps)}-${Math.max(...temps)}°F)`);
+  else if (avgHigh > 80) parts.push(`Hot (${Math.min(...temps)}-${Math.max(...temps)}°F)`);
+  else parts.push(`Mild (${Math.min(...temps)}-${Math.max(...temps)}°F)`);
+
+  // Rain summary
+  if (rainyDays.length > 0) {
+    parts.push(`rain ${rainyDays.join(", ")}`);
+  }
+
+  // Impact
+  if (impact === "high") parts.push("good foot traffic expected");
+  else if (impact === "medium" && rainyDays.length > 0) parts.push("shift to delivery likely");
+  else if (impact === "medium") parts.push("slower foot traffic");
+
+  return parts.join(", ") + ".";
+}
+
+function formatDayName(dateStr: string): string {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const date = new Date(dateStr + "T12:00:00");
+  return days[date.getDay()] ?? dateStr;
+}
 
 // =============================================================================
 // GET LOCAL EVENTS
@@ -231,7 +266,7 @@ export const getLocalEvents = tool({
         event_count: 0,
         overall_impact: "low",
         insights: [] as any[],
-        summary: `No major events found within ${radius} miles for ${startDate} to ${endDate}. Expect normal traffic patterns.`,
+        summary: "No major events nearby. Normal traffic expected.",
       };
     }
 
@@ -300,20 +335,38 @@ export const getLocalEvents = tool({
       });
     }
 
+    // Generate concise summary
+    const summary = generateEventsSummary(insights.slice(0, 5), overallImpact, totalExpectedAttendance);
+
     return {
       event_count: events.length,
       total_expected_attendance: totalExpectedAttendance,
       overall_impact: overallImpact,
       insights: insights.slice(0, 5),
-      summary:
-        overallImpact === "high"
-          ? `${events.length} events found with ~${totalExpectedAttendance.toLocaleString()} total expected attendees. High impact on traffic - increase staffing recommended.`
-          : overallImpact === "medium"
-            ? `${events.length} events found nearby. Moderate impact expected - be prepared for busier periods.`
-            : `${events.length} events found but limited direct impact expected on your location.`,
+      summary,
     };
   },
 });
+
+// Private helper - generates concise events summary
+function generateEventsSummary(
+  insights: Array<{ event: string; date: string; distance_miles: number; estimated_attendance: number; time_window: string }>,
+  impact: string,
+  totalAttendance: number
+): string {
+  if (insights.length === 0) return "No major events nearby.";
+
+  // Find the highest impact event
+  const closest = insights.reduce((a, b) => a.distance_miles < b.distance_miles ? a : b);
+
+  if (impact === "high") {
+    return `${closest.event} (${(closest.estimated_attendance / 1000).toFixed(0)}k attendees, ${closest.distance_miles.toFixed(1)}mi away). Staff up for ${closest.time_window.toLowerCase().includes("dinner") ? "dinner rush" : "event traffic"}.`;
+  } else if (impact === "medium") {
+    return `${insights.length} events nearby (~${(totalAttendance / 1000).toFixed(0)}k total). Some spillover traffic possible.`;
+  } else {
+    return `${insights.length} events in area but minimal direct impact expected.`;
+  }
+}
 
 // =============================================================================
 // GET SCHOOL CALENDAR
@@ -345,7 +398,7 @@ export const getSchoolCalendar = tool({
         holidays: 0,
         overall_impact: "low",
         insights: [] as any[],
-        summary: `No school calendar data available for ${startDate} to ${endDate}. Consider checking if dates are within the school year.`,
+        summary: "No school calendar data for this period.",
       };
     }
 
@@ -387,21 +440,44 @@ export const getSchoolCalendar = tool({
       });
     }
 
+    // Generate concise summary
+    const summary = generateCalendarSummary(insights, holidays.length, overallImpact);
+
     return {
       days_checked: days.length,
       school_days: schoolDays.length,
       holidays: holidays.length,
       overall_impact: overallImpact,
       insights,
-      summary:
-        overallImpact === "high"
-          ? "School holidays detected - expect increased family traffic. Consider kid-friendly specials and additional lunch staffing."
-          : overallImpact === "medium"
-            ? "Mixed school calendar - some days may see increased family dining."
-            : "Regular school days - standard traffic patterns expected.",
+      summary,
     };
   },
 });
+
+// Private helper - generates concise calendar summary
+function generateCalendarSummary(
+  insights: Array<{ date: string; event_type: string; is_school_day: boolean; day_of_week: string }>,
+  holidayCount: number,
+  impact: string
+): string {
+  if (insights.length === 0) return "No calendar data.";
+
+  // Find holiday types
+  const holidayTypes = insights
+    .filter(d => !d.is_school_day && d.day_of_week !== "Saturday" && d.day_of_week !== "Sunday")
+    .map(d => d.event_type);
+
+  const uniqueHolidays = [...new Set(holidayTypes)];
+
+  if (impact === "high" && uniqueHolidays.length > 0) {
+    const holidayName = uniqueHolidays[0];
+    return `${holidayName} - more families expected, especially lunch.`;
+  } else if (impact === "medium") {
+    return `${holidayCount} days off school. Some family traffic increase.`;
+  } else {
+    return "Regular school days. Standard weekday patterns.";
+  }
+}
 
 // =============================================================================
 // EXPORT ALL TOOLS

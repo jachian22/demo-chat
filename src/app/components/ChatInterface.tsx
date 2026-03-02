@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, ChefHat, MapPin, Loader2 } from "lucide-react";
 import { PhoneMockup } from "./PhoneMockup";
+import { AssistantMessage } from "./AssistantMessage";
 import {
   DEMO_RESTAURANTS,
   STAFFING_INTENTS,
@@ -266,9 +267,6 @@ Just gather the data - I'll ask my specific question next.`;
   const handleIntentSelect = (intent: typeof STAFFING_INTENTS[0]) => {
     updatePhase("chat");
 
-    // Build context summary for the system
-    const contextSummary = buildContextSummary();
-
     // Add user message
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -278,52 +276,44 @@ Just gather the data - I'll ask my specific question next.`;
     setMessages([userMessage]);
 
     // Send to API with context
-    void sendMessageWithContext(intent.prompt, contextSummary);
-  };
-
-  // Build a text summary of cached context
-  const buildContextSummary = (): string => {
-    if (!sessionContext) return "";
-
-    const parts: string[] = [];
-    parts.push(`Restaurant: ${sessionContext.restaurant.name} at ${sessionContext.restaurant.address}`);
-
-    if (sessionContext.weather) {
-      const w = sessionContext.weather;
-      parts.push(`Weather: ${String(w.summary ?? "Data available")}`);
-    }
-
-    if (sessionContext.events) {
-      const e = sessionContext.events;
-      parts.push(`Events: ${String(e.event_count ?? 0)} events found nearby. ${String(e.summary ?? "")}`);
-    }
-
-    if (sessionContext.schoolCalendar) {
-      const s = sessionContext.schoolCalendar;
-      parts.push(`School Calendar: ${String(s.summary ?? "No data")}`);
-    }
-
-    return parts.join("\n");
+    void sendMessageWithContext(intent.prompt);
   };
 
   // Send message with pre-fetched context (no new API calls needed)
-  const sendMessageWithContext = async (userPrompt: string, contextSummary: string) => {
+  const sendMessageWithContext = async (userPrompt: string) => {
     setIsLoading(true);
     onStreamingChange?.(true);
     topicTrackerRef.current.reset();
 
+    // Build concise context using summaries only
+    const weatherSummary = sessionContext?.weather?.summary as string | undefined ?? "No weather data";
+    const eventsSummary = sessionContext?.events?.summary as string | undefined ?? "No events data";
+    const calendarSummary = sessionContext?.schoolCalendar?.summary as string | undefined ?? "No calendar data";
+
+    const restaurantName = sessionContext?.restaurant.name ?? "Unknown";
+    const restaurantAddress = sessionContext?.restaurant.address ?? "Unknown";
+
     // Create a message that includes context so the model doesn't need to fetch again
-    const systemContext = `You already have this context data (DO NOT call any tools - use this data):
+    const systemContext = `You are a concise restaurant staffing assistant. Answer based on this pre-fetched data - DO NOT call any tools.
 
-${contextSummary}
+CONTEXT:
+• Restaurant: ${restaurantName} at ${restaurantAddress}
+• Weather: ${weatherSummary}
+• Events: ${eventsSummary}
+• Calendar: ${calendarSummary}
 
-Weather Details: ${JSON.stringify(sessionContext?.weather ?? {}, null, 2)}
+RESPONSE RULES:
+1. One bold headline sentence
+2. 3-4 bullet points MAX, each one line
+3. Group similar days (e.g., "Tue-Wed")
+4. End with a short follow-up question
+5. Under 80 words total`;
 
-Events Details: ${JSON.stringify(sessionContext?.events ?? {}, null, 2)}
-
-School Calendar: ${JSON.stringify(sessionContext?.schoolCalendar ?? {}, null, 2)}
-
-Now answer the user's question using ONLY this pre-fetched data. Do not call lookupRestaurant, getWeather, getLocalEvents, or getSchoolCalendar - the data is already provided above.`;
+    // Build conversation history from existing messages
+    const conversationHistory = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
 
     try {
       const response = await fetch("/api/chat", {
@@ -332,6 +322,7 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
         body: JSON.stringify({
           messages: [
             { role: "system", content: systemContext },
+            ...conversationHistory,
             { role: "user", content: userPrompt },
           ],
         }),
@@ -434,8 +425,7 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
 
-    const contextSummary = buildContextSummary();
-    await sendMessageWithContext(inputValue.trim(), contextSummary);
+    await sendMessageWithContext(inputValue.trim());
   };
 
   // Reset to start
@@ -585,27 +575,39 @@ Now answer the user's question using ONLY this pre-fetched data. Do not call loo
               exit={{ opacity: 0 }}
               className="space-y-3"
             >
-              {messages.map((msg) => (
-                <motion.div
-                  key={msg.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm ${
-                      msg.role === "user"
-                        ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-br-md"
-                        : "bg-slate-100 text-slate-800 rounded-bl-md"
-                    }`}
+              {messages.map((msg, msgIndex) => {
+                const isLastMessage = msgIndex === messages.length - 1;
+                const isStreamingThis = isLoading && isLastMessage && msg.role === "assistant";
+
+                if (msg.role === "assistant") {
+                  return (
+                    <AssistantMessage
+                      key={msg.id}
+                      messageId={msg.id}
+                      content={msg.content}
+                      isStreaming={isStreamingThis}
+                    />
+                  );
+                }
+
+                // User message - simple bubble
+                return (
+                  <motion.div
+                    key={msg.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex justify-end"
                   >
-                    <p className="whitespace-pre-wrap leading-relaxed">
-                      {msg.content}
-                    </p>
-                  </div>
-                </motion.div>
-              ))}
-              {isLoading && (
+                    <div className="max-w-[85%] px-4 py-3 rounded-2xl rounded-br-md bg-gradient-to-r from-indigo-500 to-purple-600 text-white text-sm">
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {msg.content}
+                      </p>
+                    </div>
+                  </motion.div>
+                );
+              })}
+              {/* Show typing indicator only when loading but no assistant message yet */}
+              {isLoading && (messages.length === 0 || messages[messages.length - 1]?.role !== "assistant") && (
                 <div className="flex gap-1 px-2">
                   {[0, 1, 2].map((i) => (
                     <motion.div

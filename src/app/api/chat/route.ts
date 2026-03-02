@@ -89,8 +89,13 @@ export async function POST(req: Request) {
     : [];
   let messageIndex = existingMessages.length;
 
+  // Check if client sent a custom system message (for context-aware follow-ups)
+  const clientSystemMessage = messages.find((m) => m.role === "system");
+  const systemPrompt = clientSystemMessage?.content || SYSTEM_PROMPT;
+  const nonSystemMessages = messages.filter((m) => m.role !== "system");
+
   // Save user message
-  const userMessage = messages[messages.length - 1];
+  const userMessage = nonSystemMessages[nonSystemMessages.length - 1];
   if (userMessage && currentSessionId) {
     await db.insert(chatMessages).values({
       sessionId: currentSessionId,
@@ -102,9 +107,10 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: openrouter(env.OPENROUTER_MODEL),
-    system: SYSTEM_PROMPT,
-    messages: messages as any,
+    system: systemPrompt,
+    messages: nonSystemMessages as any,
     tools: staffingTools,
+    maxTokens: 300, // Keep responses concise
     stopWhen: stepCountIs(10),
     onStepFinish: async (step: any) => {
       // Save tool calls to database (AI SDK 6 uses `input` and `output` fields)
